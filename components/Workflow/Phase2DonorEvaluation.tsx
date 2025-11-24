@@ -1,11 +1,12 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { EvaluationPhase, SurgicalPlan } from '../../types';
 import { PhaseStatus } from '../../types';
 import { Card, CardHeader, CardContent, CardTitle, CardDescription } from '../ui/Card';
-import { AlertTriangle, DraftingCompass, Activity, ShieldCheck, Check, CheckCircle, X } from 'lucide-react';
+import { AlertTriangle, DraftingCompass, Activity, ShieldCheck, Check, CheckCircle, X, FileSearch, FileUp, Dna } from 'lucide-react';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
+import { extractCTAngiogramData } from '../../services/geminiService';
 
 interface Phase2DonorProps {
   phase: EvaluationPhase;
@@ -122,6 +123,11 @@ const ReportUploadSection = ({
 const Phase2DonorEvaluation: React.FC<Phase2DonorProps> = ({ phase, setWorkflowData, isLocked }) => {
   const [activeTab, setActiveTab] = useState<'ct' | 'dtpa' | 'plan'>('ct');
   const [localPhase, setLocalPhase] = useState(phase);
+  const [isProcessingCT, setIsProcessingCT] = useState(false);
+  const [ctProcessingError, setCtProcessingError] = useState('');
+  
+  // Use a ref for the hidden file input to ensure reliable triggering
+  const ctAutofillInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setLocalPhase(phase);
@@ -310,6 +316,55 @@ const Phase2DonorEvaluation: React.FC<Phase2DonorProps> = ({ phase, setWorkflowD
         }));
     }
   };
+  
+  const handleCTReportAutofill = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessingCT(true);
+    setCtProcessingError('');
+
+    try {
+        const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const result = reader.result as string;
+                resolve(result.split(',')[1]);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+
+        const extractedData = await extractCTAngiogramData([{ base64, mimeType: file.type }]);
+        console.log("Extracted CT Data:", extractedData); // DEBUG log
+
+        setLocalPhase(prev => ({
+            ...prev,
+            ctAngiogram: {
+                ...prev.ctAngiogram!,
+                ...extractedData,
+                // Ensure report file name is set if not already
+                reportFileName: prev.ctAngiogram?.reportFileName || file.name,
+                reportUploaded: true,
+            }
+        }));
+
+    } catch (error: any) {
+        console.error("CT Autofill Error:", error);
+        setCtProcessingError(error.message || 'Failed to extract data.');
+    } finally {
+        setIsProcessingCT(false);
+        // Reset file input
+        event.target.value = ''; 
+    }
+  };
+
+  const handleTriggerAutofill = () => {
+      if (ctAutofillInputRef.current) {
+          ctAutofillInputRef.current.click();
+      }
+  };
+
 
   const handleFileRemove = (section: 'ctAngiogram' | 'dtpaRenogram') => {
     setLocalPhase(prev => ({
@@ -399,7 +454,32 @@ const Phase2DonorEvaluation: React.FC<Phase2DonorProps> = ({ phase, setWorkflowD
         {activeTab === 'ct' && ct && (
              <div role="tabpanel" id="panel-ct" aria-labelledby="tab-ct">
              <Card>
-                <CardHeader><CardTitle>CT Angiogram Assessment</CardTitle></CardHeader>
+                <CardHeader>
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                        <CardTitle>CT Angiogram Assessment</CardTitle>
+                        <div className="flex flex-col items-center">
+                            <input
+                                ref={ctAutofillInputRef}
+                                type="file"
+                                id="ct-autofill"
+                                accept="image/*,application/pdf"
+                                onChange={handleCTReportAutofill}
+                                disabled={isLocked || isProcessingCT}
+                                className="hidden"
+                            />
+                            <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={handleTriggerAutofill}
+                                disabled={isLocked || isProcessingCT}
+                                leftIcon={isProcessingCT ? <Dna size={16} className="animate-spin" /> : <FileSearch size={16} />}
+                            >
+                                {isProcessingCT ? 'Extracting Data...' : 'Autofill from Report'}
+                            </Button>
+                            {ctProcessingError && <p className="text-xs text-red-600 mt-1 bg-red-50 p-1 rounded border border-red-200">{ctProcessingError}</p>}
+                        </div>
+                    </div>
+                </CardHeader>
                 <CardContent className="space-y-6">
                     <InputField label="Date Performed" name="datePerformed" type="date" value={ct.datePerformed} onChange={e => handleInputChange('ctAngiogram', 'datePerformed', e.target.value)} disabled={isLocked}/>
                     
@@ -558,7 +638,7 @@ const Phase2DonorEvaluation: React.FC<Phase2DonorProps> = ({ phase, setWorkflowD
        <div className="mt-6 pt-4 border-t">
           <p className="text-sm text-gray-600 mb-1">Overall Phase Progress: {localPhase.progress}%</p>
           <div className="w-full bg-gray-200 rounded-full h-2.5">
-              <div className="bg-primary-600 h-2.5 rounded-full transition-all duration-500" style={{ width: `${localPhase.progress}%` }}></div>
+              <div className="bg-primary-600 h-2.5 rounded-full" style={{ width: `${localPhase.progress}%` }}></div>
           </div>
       </div>
     </div>

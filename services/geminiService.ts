@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import type { Patient, EvaluationPhase, MedicalTestItem, Consultation, Phase5Data } from '../types';
+import type { Patient, EvaluationPhase, MedicalTestItem, Consultation, Phase5Data, CTAngiogram } from '../types';
 
 // IMPORTANT: This assumes process.env.API_KEY is set in the environment.
 // Do not add UI for key management.
@@ -11,6 +11,17 @@ if (!API_KEY) {
 
 // FIX: Initialize GoogleGenAI with a named apiKey parameter.
 const ai = new GoogleGenAI({ apiKey: API_KEY! });
+
+// Helper to clean JSON string if it contains markdown code blocks
+const cleanJson = (text: string): string => {
+  if (!text) return "{}";
+  let clean = text.trim();
+  // Remove markdown code blocks if present (e.g. ```json ... ```)
+  if (clean.startsWith('```')) {
+    clean = clean.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '');
+  }
+  return clean.trim();
+};
 
 const formatPatientDataForPrompt = (patient: Patient, workflow: EvaluationPhase[], medicalTests?: MedicalTestItem[]): string => {
   const completedPhases = workflow.filter(p => p.status === 'completed').map(p => p.name).join(', ') || 'None';
@@ -85,7 +96,7 @@ export const generateEvaluationSummary = async (patient: Patient, workflow: Eval
       model: 'gemini-2.5-flash',
       contents: prompt,
     });
-    return response.text;
+    return response.text || "No summary generated.";
   } catch (error) {
     console.error("Error generating evaluation summary:", error);
     return "An error occurred while generating the summary. Please check the console for details.";
@@ -117,7 +128,7 @@ export const generateRiskAssessment = async (patient: Patient): Promise<string> 
       model: 'gemini-2.5-flash',
       contents: prompt,
     });
-    return response.text;
+    return response.text || "No risk assessment generated.";
   } catch (error) {
     console.error("Error generating risk assessment:", error);
     return "An error occurred while generating the risk assessment. Please check the console for details.";
@@ -161,7 +172,7 @@ export const generateClearanceSummary = async (patient: Patient, consultations: 
       model: 'gemini-2.5-flash',
       contents: prompt,
     });
-    return response.text;
+    return response.text || "No summary generated.";
   } catch (error) {
     console.error("Error generating clearance summary:", error);
     return "An error occurred while generating the summary. Please check the console for details.";
@@ -206,7 +217,7 @@ export const generatePairSummary = async (
       model: 'gemini-2.5-flash',
       contents: prompt,
     });
-    return response.text;
+    return response.text || "No summary generated.";
   } catch (error) {
     console.error("Error generating pair summary:", error);
     return "An error occurred while generating the summary. Please check the console for details.";
@@ -291,10 +302,85 @@ export const extractHlaDataFromReports = async (
       },
     });
 
-    const jsonText = response.text.trim();
+    const jsonText = cleanJson(response.text || "{}");
     return JSON.parse(jsonText);
   } catch (error) {
     console.error("Error extracting data from reports:", error);
     throw new Error("Failed to parse the medical reports. Please ensure the uploaded files are clear and valid.");
+  }
+};
+
+// --- CT Angiogram Data Extraction ---
+
+const ctExtractionSchema = {
+    type: Type.OBJECT,
+    properties: {
+        datePerformed: { type: Type.STRING },
+        leftKidneyLength: { type: Type.STRING },
+        leftKidneyWidth: { type: Type.STRING },
+        leftKidneyVolume: { type: Type.STRING },
+        leftMainArteryDiameter: { type: Type.STRING },
+        rightKidneyLength: { type: Type.STRING },
+        rightKidneyWidth: { type: Type.STRING },
+        rightKidneyVolume: { type: Type.STRING },
+        rightMainArteryDiameter: { type: Type.STRING },
+        leftRenalArteries: { type: Type.STRING },
+        leftRenalVeins: { type: Type.STRING },
+        rightRenalArteries: { type: Type.STRING },
+        rightRenalVeins: { type: Type.STRING },
+        accessoryVessels: { type: Type.STRING },
+        corticalThickness: { type: Type.STRING },
+        parenchymalQuality: { type: Type.STRING },
+        calcificationAtherosclerosis: { type: Type.STRING },
+        anatomicalVariations: { type: Type.STRING },
+        clinicalInterpretation: { type: Type.STRING },
+    }
+};
+
+export const extractCTAngiogramData = async (
+  reportFiles: { base64: string; mimeType: string }[]
+): Promise<Partial<CTAngiogram>> => {
+  if (!API_KEY) {
+    throw new Error("Gemini API key is not configured.");
+  }
+
+  const textPart = {
+    text: `
+      You are a specialized medical data extraction agent.
+      Analyze the provided CT Angiogram report for a kidney donor.
+      Extract the relevant anatomical measurements and clinical observations into the structured JSON format.
+
+      **Instructions:**
+      1.  **Measurements:** Extract numerical values for kidney dimensions (length, width), volume, and artery diameters. If units are present, strip them (e.g., convert "10.5 cm" to "10.5").
+      2.  **Vessels:** Extract the count of renal arteries and veins for each side.
+      3.  **Observations:** Extract text descriptions for accessory vessels, parenchymal quality, calcification, and anatomical variations.
+      4.  **Interpretation:** Summarize the "Impression" or "Conclusion" section into the 'clinicalInterpretation' field.
+      5.  **Dates:** Extract the date the procedure was performed (YYYY-MM-DD format if possible).
+      6.  **Missing Data:** If a field is not found, omit it or return null/empty string.
+    `
+  };
+
+  const fileParts = reportFiles.map(file => ({
+    inlineData: {
+      data: file.base64,
+      mimeType: file.mimeType,
+    },
+  }));
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: { parts: [textPart, ...fileParts] },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: ctExtractionSchema,
+      },
+    });
+
+    const jsonText = cleanJson(response.text || "{}");
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.error("Error extracting CT data:", error);
+    throw new Error("Failed to parse the CT Angiogram report.");
   }
 };
